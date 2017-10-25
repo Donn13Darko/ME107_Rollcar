@@ -11,8 +11,6 @@ bool rdy, detecting;
 const float Pi = 3.141593;
 unsigned long dst, dsdt;
 unsigned long gst, gsdt;
-unsigned long microsPerReading = 1000000 / 25;
-unsigned long microsPrevious;
 
 // Transform matrix sines and cosines
 float sx, sy, sz;
@@ -59,6 +57,7 @@ float filt_old = 0.9;
 // Multiplication Consts
 float aRawFilt = gToMS*filt_new;
 float gRawFilt = gToMS*degToRad;
+float usToS = pow(10, -6);
 
 static void zeroVars()
 {
@@ -125,8 +124,8 @@ static void get_new_data()
   // read gyro measurements from device, scaled to the configured range
   CurieIMU.readGyroScaled(g[0], g[1], g[2]);
 
-  // Get gyro timing info
-  gsdt = gst - micros();
+  // Get gyro timing info (take us to s)
+  gsdt = (micros() - gst)*usToS;
   gst = micros();
   
   // Filter raw data
@@ -166,7 +165,8 @@ static void dist_to_normal()
 
 static void update_globalVals()
 {
-  dsdt = micros() - dst;
+  // Get accel timing info (take us to s)
+  dsdt = (micros() - dst)*usToS;
   dst = micros();
 
   for (i = 0; i < 3; i++)
