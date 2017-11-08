@@ -13,13 +13,14 @@ int servoPinX = 6;
 int servoPinY = 9;
 bool rdy, detecting;
 const float Pi = 3.141593;
-unsigned long dst, dsdt;
-int aR = 4; // g's
-int gR = 500; // deg/s
-int uR = 400;
+int aR = 2; // g's
+int gR = 250; // deg/s
+int uR = 25;
 float prec = 32768.0;
-unsigned long microsPrevious, microsNow;
+unsigned long microsPrevious, microsNow, d;
 unsigned long microsPerReading = 1000000 / uR;
+float secPerReading = 1.0 / uR;
+float secPerReadingSQ = pow(secPerReading, 2);
 
 // Madgwick filter
 Madgwick filter;
@@ -32,23 +33,23 @@ float cx, cy, cz;
 Servo xServo;
 Servo yServo;
 
-// Global Plane Velocity (m/s)
+// Globa Accel (m/s)
+float ca[3];
+
+// Global Velocity (m/s)
 float cvel[3];
 
-// Global Plane Distance (m)
+// Global Distance (m)
 float cdist[3];
 
 // New Raw Values (g, deg/s)
-int ax[3], gx[3];
+float ax[3], gx[3];
 float a[3], g[3];
 
 // Filtered Raw Values (m/s^s, rad)
 float fa[3], fg[3];
 
-// Globa Accel Values (m/s)
-float na[3];
-
-// Normal Plane Distance Values (m)
+// Normal Plane Distance (m)
 float ndist[3];
 
 // Spherical transform for gyro (Deg 0-180)
@@ -57,16 +58,8 @@ float sTheta, sPhi;
 // Scaling Values
 float gToMS = 9.8;
 float radToDeg = 180/Pi;
-float degToRad = Pi/180;
-
-// Filter Multipliers
 float alpha = 0.1;
-float aOldFilt = 1.0 - alpha;
-
-// Multiplication Consts
-float aRawFilt = ((float) aR) / prec;
-float gRawFilt = ((float) gR) / prec;
-float usToS = pow(10, -6);
+float alpha2 = 1 - alpha;
 
 static void zeroVars()
 {
@@ -75,21 +68,17 @@ static void zeroVars()
     cvel[i] = cdist[i] = 0.0;
     ax[i] = gx[i] = 0;
     a[i] = g[i] = 0.0;
-    na[i] = ndist[i] = 0.0;
+    ca[i] = ndist[i] = 0.0;
   }
   sTheta = sPhi = 0.0;
   sx = sy = sz = 0.0;
   cx = cy = cz = 0.0;
-  dst = dsdt = 0.0;
 }
 
 void setup()
 {
   // Initialize Serial communication
   Serial.begin(9600);
-
-  // Zero all values
-  zeroVars();
   
   // Initialize Variables
   rdy = false;
@@ -116,33 +105,44 @@ void setup()
   // Set the accelerometer range to 500 degrees/second
   CurieIMU.setGyroRange(gR);
 
-  delay(500);
+  // Pull data till it stabalizes
+  d = uR * 15;
+  while (0 < d)
+  {
+    microsNow = micros();
+    if (microsPerReading < (microsNow - microsPrevious))
+    {
+      CurieIMU.readAccelerometerScaled(ax[0], ax[1], ax[2]);
+      CurieIMU.readGyroScaled(gx[0], gx[1], gx[2]);
+
+      filter.updateIMU(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
+      
+      microsPrevious = microsPrevious + microsPerReading;
+      d = d - 1;
+    }
+  }
+
+  // Zero all values
+  zeroVars();
 }
 
 static void get_new_data()
 {
   // read accel/gyro measurements from device, scaled to the configured range
-  CurieIMU.readMotionSensor(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
+  CurieIMU.readAccelerometerScaled(ax[0], ax[1], ax[2]);
+  CurieIMU.readGyroScaled(gx[0], gx[1], gx[2]);
   
-  // Convert raw data
-  for (i = 0; i < 3; i++)
-  {
-    a[i] = aRawFilt*ax[i];
-    g[i] = gRawFilt*gx[i];
-  }
-
   // Update IMU
-  filter.updateIMU(a[0], a[1], a[2], g[0], g[1], g[2]);
+  filter.updateIMU(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
 
   // Update filtered values
-  fg[0] = filter.getRollRadians() - 1.15;
-  fg[1] = filter.getPitchRadians() - 1.11;
-  fg[2] = filter.getYawRadians() - 1.24;
+  fg[0] = filter.getRollRadians();
+  fg[1] = filter.getPitchRadians();
+  fg[2] = filter.getYawRadians();
 
   for (i = 0; i < 3; i++)
   {
-    fa[i] = alpha*a[i] + aOldFilt*fa[i];
-    //fg[i] = alpha*g[i] + aOldFilt*fg[i];
+    fa[i] = alpha*ax[i] + alpha2 * fa[i];
   }
 }
 
@@ -160,9 +160,20 @@ static void compute_scVals()
 static void accel_to_global()
 {
   // Compute the normal acceleration transform
-  na[0] = (fa[0]*cy*cz + fa[1]*(cy*sz) + fa[2]*(-sy)) + 0.12;
-  na[1] = (fa[0]*(cz*sx*sy-cx*sz) + fa[1]*(cx*cz+sx*sy*sz) + fa[2]*(cy*sx)) + 0.02;
-  na[2] = (fa[0]*(sx*sz+cx*cz*sy) + fa[1]*(cx*sy*sz-cz*sx) + fa[2]*cx*cy) - 1.08;
+  ca[0] = (fa[0]*(sx*sz+cx*cz*sy) + fa[1]*(cx*sy*sz-cz*sx) + fa[2]*cx*cy) - 0.08;
+  ca[1] = (fa[0]*(cz*sx*sy-cx*sz) + fa[1]*(cx*cz+sx*sy*sz) + fa[2]*(cy*sx)) - 0.5;
+  ca[2] = (fa[0]*cy*cz + fa[1]*(cy*sz) + fa[2]*(-sy)) + 1.0;
+}
+
+static void update_globalVals()
+{
+  // Get accel timing info (take us to s)
+
+  for (i = 0; i < 3; i++)
+  {
+    cdist[i] = cdist[i] + cvel[i]*secPerReading + 0.5*gToMS*ca[i]*secPerReadingSQ;
+    cvel[i] = cvel[i] + gToMS*ca[i]*secPerReading;
+  }
 }
 
 static void dist_to_normal()
@@ -171,19 +182,6 @@ static void dist_to_normal()
   ndist[0] = cdist[0]*cy*cx + cdist[1]*(cz*sx*sy-cx*sz) + cdist[2]*sy;
   ndist[1] = cdist[0]*cy*sz + cdist[1]*(cx*cz+sx*sy*sz) + cdist[2]*(cx*sy*sz-cz*sx);
   ndist[2] = cdist[0]*-sy + cdist[1]*cy*sx + cdist[2]*cx*cy;
-}
-
-static void update_globalVals()
-{
-  // Get accel timing info (take us to s)
-  dsdt = (micros() - dst)*usToS;
-  dst = micros();
-
-  for (i = 0; i < 3; i++)
-  {
-    cdist[i] = cdist[i] + cvel[i]*dsdt + 0.5*gToMS*na[i]*pow(dsdt, 2);
-    cvel[i] = cvel[i] + gToMS*na[i]*dsdt;
-  }
 }
 
 static void ndist_to_spherical()
@@ -200,22 +198,14 @@ void set_servos()
 
 static void setup_angles()
 { 
-  // Get starting angles (not used)
-  sTheta = xServo.read();
-  sPhi = yServo.read();
-
   // Set starting distances
-  cdist[0] = 10;
-  cdist[1] = 10;
-  cdist[2] = 1;
-
-  // Get Accel
-  get_new_data();
+  cdist[0] = 11.0;
+  cdist[1] = 11.0;
+  cdist[2] = 1.0;
 }
 
 static void begin_motion_detection()
-{  
-  dst = micros();
+{
   microsPrevious = micros();
   int j = 0;
   
@@ -263,6 +253,20 @@ static void begin_motion_detection()
         j = 0;
         for (i = 0; i < 3; i++)
         {
+          Serial.print(ax[i]);
+          Serial.print(" ");
+        }
+        Serial.println("");
+
+        for (i = 0; i < 3; i++)
+        {
+          Serial.print(gx[i]);
+          Serial.print(" ");
+        }
+        Serial.println("");
+
+        for (i = 0; i < 3; i++)
+        {
           Serial.print(fa[i]);
           Serial.print(" ");
         }
@@ -277,7 +281,21 @@ static void begin_motion_detection()
 
         for (i = 0; i < 3; i++)
         {
-          Serial.print(na[i]);
+          Serial.print(ca[i]);
+          Serial.print(" ");
+        }
+        Serial.println("");
+
+        for (i = 0; i < 3; i++)
+        {
+          Serial.print(cvel[i]);
+          Serial.print(" ");
+        }
+        Serial.println("");
+
+        for (i = 0; i < 3; i++)
+        {
+          Serial.print(cdist[i]);
           Serial.print(" ");
         }
         Serial.println("");
