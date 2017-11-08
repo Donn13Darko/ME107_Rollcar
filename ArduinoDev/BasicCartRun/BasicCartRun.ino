@@ -33,7 +33,7 @@ float cx, cy, cz;
 Servo xServo;
 Servo yServo;
 
-// Globa Accel (m/s)
+// Globa Accel (m/s^2)
 float ca[3];
 
 // Global Velocity (m/s)
@@ -60,6 +60,8 @@ float gToMS = 9.8;
 float radToDeg = 180/Pi;
 float alpha = 0.1;
 float alpha2 = 1 - alpha;
+
+static void get_new_data();
 
 static void zeroVars()
 {
@@ -112,10 +114,7 @@ void setup()
     microsNow = micros();
     if (microsPerReading < (microsNow - microsPrevious))
     {
-      CurieIMU.readAccelerometerScaled(ax[0], ax[1], ax[2]);
-      CurieIMU.readGyroScaled(gx[0], gx[1], gx[2]);
-
-      filter.updateIMU(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
+      get_new_data();
       
       microsPrevious = microsPrevious + microsPerReading;
       d = d - 1;
@@ -160,9 +159,9 @@ static void compute_scVals()
 static void accel_to_global()
 {
   // Compute the normal acceleration transform
-  ca[0] = (fa[0]*(sx*sz+cx*cz*sy) + fa[1]*(cx*sy*sz-cz*sx) + fa[2]*cx*cy) - 0.08;
-  ca[1] = (fa[0]*(cz*sx*sy-cx*sz) + fa[1]*(cx*cz+sx*sy*sz) + fa[2]*(cy*sx)) - 0.5;
-  ca[2] = (fa[0]*cy*cz + fa[1]*(cy*sz) + fa[2]*(-sy)) + 1.0;
+  ca[0] = gToMS*(fa[0]*(sx*sz+cx*cz*sy) + fa[1]*(cx*sy*sz-cz*sx) + fa[2]*cx*cy) - 1.05;
+  ca[1] = gToMS*(fa[0]*(cz*sx*sy-cx*sz) + fa[1]*(cx*cz+sx*sy*sz) + fa[2]*(cy*sx)) - 4.3;
+  ca[2] = gToMS*(fa[0]*cy*cz + fa[1]*(cy*sz) + fa[2]*(-sy)) + 9.9;
 }
 
 static void update_globalVals()
@@ -171,8 +170,8 @@ static void update_globalVals()
 
   for (i = 0; i < 3; i++)
   {
-    cdist[i] = cdist[i] + cvel[i]*secPerReading + 0.5*gToMS*ca[i]*secPerReadingSQ;
-    cvel[i] = cvel[i] + gToMS*ca[i]*secPerReading;
+    cdist[i] = cdist[i] + 0.5*ca[i]*secPerReadingSQ;
+    cvel[i] = cvel[i] + ca[i]*secPerReading;
   }
 }
 
