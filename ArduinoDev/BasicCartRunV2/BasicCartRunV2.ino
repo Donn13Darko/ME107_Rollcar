@@ -1,5 +1,6 @@
-#include <CurieIMU.h>
 #include <Servo.h>
+#include <Wire.h>
+#include <MPU6050.h>
 #include <MadgwickAHRS.h>
 
 // Gyro readings are in radians and acceleration is in m/s
@@ -44,7 +45,8 @@ float cdist[3];
 
 // New Raw Values (g, deg/s)
 float ax[3], gx[3];
-float a[3], g[3];
+int16_t a[3], g[3];
+int16_t tm;
 
 // Filtered Raw Values (m/s^s, rad)
 float fa[3], fg[3];
@@ -61,6 +63,7 @@ float radToDeg = 180/Pi;
 float alpha = 0.05;
 float alpha2 = 1 - alpha;
 
+// Function Prototypes
 static void get_new_data();
 
 static void zeroVars()
@@ -69,7 +72,7 @@ static void zeroVars()
   {
     cvel[i] = cdist[i] = 0.0;
     ax[i] = gx[i] = 0;
-    a[i] = g[i] = 0.0;
+    a[i] = g[i] = 0;
     ca[i] = ndist[i] = 0.0;
   }
   sTheta = sPhi = 0.0;
@@ -93,19 +96,14 @@ void setup()
   yServo.attach(servoPinY);
   
   // Initialize the IMU
-  CurieIMU.begin();
+  Wire.begin();
+  Wire.beginTransmission(MPU6050_ADDRESS_AD0_LOW);
+  Wire.write(MPU6050_RA_PWR_MGMT_1);
+  Wire.write(0);
+  Wire.endTransmission(true);
 
   // Set Rates for Gyro, Accel, and filter
-  CurieIMU.setGyroRate(uR);
-  CurieIMU.setAccelerometerRate(uR);
   filter.begin(uR);
-
-  // Increase Accelerometer range to
-  // allow detection of stronger taps (< 2g)
-  CurieIMU.setAccelerometerRange(aR);
-
-  // Set the accelerometer range to 500 degrees/second
-  CurieIMU.setGyroRange(gR);
 
   // Pull data till it stabalizes
   d = uR * 15;
@@ -128,8 +126,17 @@ void setup()
 static void get_new_data()
 {
   // read accel/gyro measurements from device, scaled to the configured range
-  CurieIMU.readAccelerometerScaled(ax[0], ax[1], ax[2]);
-  CurieIMU.readGyroScaled(gx[0], gx[1], gx[2]);
+  Wire.beginTransmission(MPU6050_ADDRESS_AD0_LOW);
+  Wire.write(MPU6050_RA_ACCEL_XOUT_H);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU6050_ADDRESS_AD0_LOW,14,true);
+  ax[0] = Wire.read()<<8 | Wire.read();
+  ax[1] = Wire.read()<<8 | Wire.read();
+  ax[2] = Wire.read()<<8 | Wire.read();
+  temperature = Wire.read()<<8 | Wire.read();
+  gx[0] = Wire.read()<<8 | Wire.read();
+  gx[1] = Wire.read()<<8 | Wire.read();
+  gx[2] = Wire.read()<<8 | Wire.read();
   
   // Update IMU
   filter.updateIMU(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
