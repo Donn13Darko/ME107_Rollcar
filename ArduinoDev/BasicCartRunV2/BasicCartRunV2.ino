@@ -1,9 +1,9 @@
-#include <SD.h>
-#include <SPI.h>
+//#include <SdFat.h>
+//#include <SPI.h>
 #include <Servo.h>
 #include <Wire.h>
 #include <I2Cdev.h>
-#include "MPU6050_6Axis_MotionApps20.h"
+#include <MPU6050_6Axis_MotionApps20.h>
 
 #define INTERRUPT_PIN 2
 
@@ -14,19 +14,14 @@
 // Variables
 int i, rdySw;
 int rdyPinIN = 3;
-int servoPinX = 6;
-int servoPinY = 9;
+int servoPinX = 9;
+int servoPinY = 6;
 bool rdy, detecting;
 const float Pi = 3.141593;
-int aR = 2; // g's
-int gR = 250; // deg/s
 int uR = 200;
 float prec = 32768.0;
 unsigned long microsPrevious;
 float microsNow;
-unsigned long microsPerReading = 1000000 / uR;
-float secPerReading = 1.0 / uR;
-float secPerReadingSQ = pow(secPerReading, 2);
 
 // MPU6050
 MPU6050 mpu;
@@ -45,8 +40,9 @@ float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
 // Save Data
-File testData;
-int pinCS = 10;
+//SdFat sd;
+//File testData;
+//int pinCS = 10;
 
 // Transform matrix sines and cosines
 float sx, sy, sz;
@@ -84,7 +80,7 @@ float rawToG = 16384.0;
 float gToMS = 9.8;
 float radToDeg = 180/Pi;
 float alpha = 0.05;
-float alpha2 = alpha / rawToG;
+float alpha2 = gToMS * alpha / rawToG;
 float alphaO = 1 - alpha;
 
 // Function Prototypes
@@ -122,7 +118,7 @@ void setup()
   rdy = false;
   detecting = false;
   pinMode(rdyPinIN, INPUT);
-  pinMode(pinCS, OUTPUT);
+//  pinMode(pinCS, OUTPUT);
   rdySw = digitalRead(rdyPinIN);
 
   // Initialize Servos
@@ -130,22 +126,11 @@ void setup()
   yServo.attach(servoPinY);
 
   // Initilize the SD Card
-  if (SD.begin())
-  {
-    Serial.println("SD card is ready to use.");
-    testData = SD.open("test.txt", FILE_WRITE);
-    if (testData)
-    {
-      Serial.println("Start of Data Collection");
-      testData.println("Start of Data Collection");
-    } else
-    {
-      Serial.println("Error opening test.txt");
-    }
-  } else
-  {
-    Serial.println("SD card initialization failed");
-  }
+//  sd.begin(pinCS, SD_SCK_MHZ(50));
+//  testData = sd.open("test.txt", FILE_WRITE);
+//
+//  testData.println("Start of Data Collection");
+//  testData.flush();
   
   // Initialize the IMU
   mpu.initialize();
@@ -156,12 +141,10 @@ void setup()
   mpu.setXAccelOffset(2172);
   mpu.setYAccelOffset(371);
   mpu.setZAccelOffset(1105);
-  
   mpu.setXGyroOffset(221);
   mpu.setYGyroOffset(-111);
   mpu.setZGyroOffset(9);
-
- if (devStatus == 0) {
+  if (devStatus == 0) {
       mpu.setDMPEnabled(true);
       attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
       mpuIntStatus = mpu.getIntStatus();
@@ -185,12 +168,12 @@ static void get_new_data()
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
   // Update filtered values
-  ca[0] = alpha2*aaWorld.x + alphaO*ca[0];
-  ca[1] = alpha2*aaWorld.y + alphaO*ca[1];
+  ca[0] = alpha2*aaWorld.y + alphaO*ca[0];
+  ca[1] = alpha2*aaWorld.x + alphaO*ca[1];
   ca[2] = alpha2*aaWorld.z + alphaO*ca[2];
 
-  fg[0] = alpha*ypr[2] + alphaO*fg[0];
-  fg[1] = alpha*ypr[1] + alphaO*fg[1];
+  fg[0] = alpha*ypr[1] + alphaO*fg[0];
+  fg[1] = alpha*ypr[2] + alphaO*fg[1];
   fg[2] = alpha*ypr[0] + alphaO*fg[2];
 }
 
@@ -228,14 +211,14 @@ static void dist_to_normal()
 
 static void ndist_to_spherical()
 {
-  sTheta = atan2(ndist[1], ndist[0])*radToDeg;
-  sPhi = atan2(sqrt((pow(ndist[0], 2) + pow(ndist[1], 2))), ndist[2])*radToDeg;
+  sPhi = atan2(ndist[1], ndist[0])*radToDeg + 90;
+  sTheta = 180 - atan2(sqrt((pow(ndist[0], 2) + pow(ndist[1], 2))), ndist[2])*radToDeg;
 }
 
 void set_servos()
 {
-  xServo.write(sTheta);
-  yServo.write(sPhi);
+  xServo.write(sPhi);
+  yServo.write(sTheta);
 }
 
 static void setup_angles()
@@ -307,71 +290,72 @@ static void printToSerial()
   Serial.println("");
 }
 
-static void printToFile()
-{
-  testData.print("fa:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(fa[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-
-  testData.print("fg:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(fg[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-
-  testData.print("ca:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(ca[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-
-  testData.print("cvel:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(cvel[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-
-  testData.print("cdist:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(cdist[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-
-  testData.print("ndist:\t");
-  for (i = 0; i < 3; i++)
-  {
-    testData.print(ndist[i]);
-    testData.print("\t");
-  }
-  testData.println("");
-  
-  testData.print("X Ang:\t");
-  testData.println(sTheta);
-  
-  testData.print("Y Ang:\t");
-  testData.println(sPhi);
-
-  testData.println("");
-}
+//static void printToFile()
+//{
+//  testData.print("fa:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(fa[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//
+//  testData.print("fg:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(fg[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//
+//  testData.print("ca:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(ca[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//
+//  testData.print("cvel:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(cvel[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//
+//  testData.print("cdist:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(cdist[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//
+//  testData.print("ndist:\t");
+//  for (i = 0; i < 3; i++)
+//  {
+//    testData.print(ndist[i]);
+//    testData.print("\t");
+//  }
+//  testData.println("");
+//  
+//  testData.print("X Ang:\t");
+//  testData.println(sTheta);
+//  
+//  testData.print("Y Ang:\t");
+//  testData.println(sPhi);
+//
+//  testData.println("");
+//  testData.flush();
+//}
 
 static void begin_motion_detection()
 {
   microsPrevious = micros();
   int j = 0;
   int k = 0;
-  int endCal = 500;
+  int endCal = 100;
   
   while (rdySw)
   {
@@ -427,10 +411,6 @@ static void begin_motion_detection()
 //        Serial.println("Sin/cos...");
         compute_scVals();
     
-        // transform normal plane accel to global plane
-//        Serial.println("Global Plane...");
-        //accel_to_global();
-    
         // Update the distance & velocity in the global plane
 //        Serial.println("Update Globals...");
         update_globalVals();
@@ -443,19 +423,16 @@ static void begin_motion_detection()
 //        Serial.println("Spherical Normal Dist...");
         ndist_to_spherical();
 
+        // Set servos
+        set_servos();
+
         j = j + 1;
         if (uR <= j)
         {
           j = 0;
           
-          set_servos();
-          
           printToSerial();
-
-          if (testData)
-          {
-            printToFile();
-          }          
+//          printToFile();
         }
       }
     }
@@ -465,7 +442,7 @@ static void begin_motion_detection()
 // Used to continuously relay data over bluetooth connection
 void loop()
 {
-  //if (!dmpReady) return;
+  if (!dmpReady) return;
   
   rdySw = digitalRead(rdyPinIN);
   if (rdySw & rdy & !detecting)
