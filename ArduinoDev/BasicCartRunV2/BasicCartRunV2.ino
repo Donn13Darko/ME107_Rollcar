@@ -465,7 +465,7 @@ static void begin_motion_detection()
 // Used to continuously relay data over bluetooth connection
 void loop()
 {
-  if (!dmpReady) return;
+  //if (!dmpReady) return;
   
   rdySw = digitalRead(rdyPinIN);
   if (rdySw & rdy & !detecting)
