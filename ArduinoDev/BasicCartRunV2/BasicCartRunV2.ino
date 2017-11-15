@@ -1,7 +1,11 @@
+#include <SD.h>
+#include <SPI.h>
 #include <Servo.h>
 #include <Wire.h>
-#include <MPU6050.h>
-#include <MadgwickAHRS.h>
+#include <I2Cdev.h>
+#include "MPU6050_6Axis_MotionApps20.h"
+
+#define INTERRUPT_PIN 2
 
 // Gyro readings are in radians and acceleration is in m/s
 // (Must be transformed from g's for accel)
@@ -9,7 +13,7 @@
 
 // Variables
 int i, rdySw;
-int rdyPinIN = 2;
+int rdyPinIN = 3;
 int servoPinX = 6;
 int servoPinY = 9;
 bool rdy, detecting;
@@ -18,13 +22,31 @@ int aR = 2; // g's
 int gR = 250; // deg/s
 int uR = 200;
 float prec = 32768.0;
-unsigned long microsPrevious, microsNow, d;
+unsigned long microsPrevious;
+float microsNow;
 unsigned long microsPerReading = 1000000 / uR;
 float secPerReading = 1.0 / uR;
 float secPerReadingSQ = pow(secPerReading, 2);
 
-// Madgwick filter
-Madgwick filter;
+// MPU6050
+MPU6050 mpu;
+bool dmpReady = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64]; // FIFO storage buffer
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float euler[3];         // [psi, theta, phi]    Euler angle container
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
+// Save Data
+File testData;
+int pinCS = 10;
 
 // Transform matrix sines and cosines
 float sx, sy, sz;
@@ -58,13 +80,20 @@ float ndist[3];
 float sTheta, sPhi;
 
 // Scaling Values
+float rawToG = 16384.0;
 float gToMS = 9.8;
 float radToDeg = 180/Pi;
 float alpha = 0.05;
-float alpha2 = 1 - alpha;
+float alpha2 = alpha / rawToG;
+float alphaO = 1 - alpha;
 
 // Function Prototypes
 static void get_new_data();
+
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+void dmpDataReady() {
+    mpuInterrupt = true;
+}
 
 static void zeroVars()
 {
@@ -82,74 +111,87 @@ static void zeroVars()
 
 void setup()
 {
+  // Start I2C
+  Wire.begin();
+  Wire.setClock(400000);
+  
   // Initialize Serial communication
-  Serial.begin(9600);
+  Serial.begin(115200);
   
   // Initialize Variables
   rdy = false;
   detecting = false;
   pinMode(rdyPinIN, INPUT);
+  pinMode(pinCS, OUTPUT);
   rdySw = digitalRead(rdyPinIN);
 
   // Initialize Servos
   xServo.attach(servoPinX);
   yServo.attach(servoPinY);
+
+  // Initilize the SD Card
+  if (SD.begin())
+  {
+    Serial.println("SD card is ready to use.");
+    testData = SD.open("test.txt", FILE_WRITE);
+    if (testData)
+    {
+      Serial.println("Start of Data Collection");
+      testData.println("Start of Data Collection");
+    } else
+    {
+      Serial.println("Error opening test.txt");
+    }
+  } else
+  {
+    Serial.println("SD card initialization failed");
+  }
   
   // Initialize the IMU
-  Wire.begin();
-  Wire.beginTransmission(MPU6050_ADDRESS_AD0_LOW);
-  Wire.write(MPU6050_RA_PWR_MGMT_1);
-  Wire.write(0);
-  Wire.endTransmission(true);
+  mpu.initialize();
+  pinMode(INTERRUPT_PIN, INPUT);
+  Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+  devStatus = mpu.dmpInitialize();
+  
+  mpu.setXAccelOffset(2172);
+  mpu.setYAccelOffset(371);
+  mpu.setZAccelOffset(1105);
+  
+  mpu.setXGyroOffset(221);
+  mpu.setYGyroOffset(-111);
+  mpu.setZGyroOffset(9);
 
-  // Set Rates for Gyro, Accel, and filter
-  filter.begin(uR);
-
-  // Pull data till it stabalizes
-  d = uR * 15;
-  while (0 < d)
-  {
-    microsNow = micros();
-    if (microsPerReading < (microsNow - microsPrevious))
-    {
-      get_new_data();
-      
-      microsPrevious = microsPrevious + microsPerReading;
-      d = d - 1;
-    }
+ if (devStatus == 0) {
+      mpu.setDMPEnabled(true);
+      attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+      mpuIntStatus = mpu.getIntStatus();
+      dmpReady = true;
+      packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+      Serial.print(F("DMP Initialization failed (code "));
+      Serial.print(devStatus);
+      Serial.println(F(")"));
   }
-
-  // Zero all values
-  zeroVars();
 }
 
 static void get_new_data()
 {
   // read accel/gyro measurements from device, scaled to the configured range
-  Wire.beginTransmission(MPU6050_ADDRESS_AD0_LOW);
-  Wire.write(MPU6050_RA_ACCEL_XOUT_H);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU6050_ADDRESS_AD0_LOW,14,true);
-  ax[0] = Wire.read()<<8 | Wire.read();
-  ax[1] = Wire.read()<<8 | Wire.read();
-  ax[2] = Wire.read()<<8 | Wire.read();
-  temperature = Wire.read()<<8 | Wire.read();
-  gx[0] = Wire.read()<<8 | Wire.read();
-  gx[1] = Wire.read()<<8 | Wire.read();
-  gx[2] = Wire.read()<<8 | Wire.read();
-  
-  // Update IMU
-  filter.updateIMU(ax[0], ax[1], ax[2], gx[0], gx[1], gx[2]);
+  mpu.dmpGetQuaternion(&q, fifoBuffer);
+  mpu.dmpGetAccel(&aa, fifoBuffer);
+  mpu.dmpGetGravity(&gravity, &q);
+  mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+  mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
   // Update filtered values
-  fg[0] = filter.getRollRadians() - 1.15;
-  fg[1] = filter.getPitchRadians() - 1.10;
-  fg[2] = filter.getYawRadians() - 0.95;
+  ca[0] = alpha2*aaWorld.x + alphaO*ca[0];
+  ca[1] = alpha2*aaWorld.y + alphaO*ca[1];
+  ca[2] = alpha2*aaWorld.z + alphaO*ca[2];
 
-  for (i = 0; i < 3; i++)
-  {
-    fa[i] = alpha*ax[i] + alpha2*fa[i];
-  }
+  fg[0] = alpha*ypr[2] + alphaO*fg[0];
+  fg[1] = alpha*ypr[1] + alphaO*fg[1];
+  fg[2] = alpha*ypr[0] + alphaO*fg[2];
 }
 
 static void compute_scVals()
@@ -163,22 +205,16 @@ static void compute_scVals()
   cz = cos(fg[2]);
 }
 
-static void accel_to_global()
-{
-  // Compute the normal acceleration transform
-  ca[0] = gToMS*(fa[0]*(sx*sz+cx*cz*sy) + fa[1]*(cx*sy*sz-cz*sx) + fa[2]*cx*cy) - 1.0;
-  ca[1] = gToMS*(fa[0]*(cz*sx*sy-cx*sz) + fa[1]*(cx*cz+sx*sy*sz) + fa[2]*(cy*sx)) - 4.6;
-  ca[2] = gToMS*(fa[0]*cy*cz + fa[1]*(cy*sz) + fa[2]*(-sy)) + 9.81;
-}
-
 static void update_globalVals()
 {
   // Get accel timing info (take us to s)
+  microsNow = 1.0 * (micros() - microsPrevious) / 1000000.0;
+  microsPrevious = micros();
 
   for (i = 0; i < 3; i++)
   {
-    cdist[i] = cdist[i] + cvel[i]*secPerReading + 0.5*ca[i]*secPerReadingSQ;
-    cvel[i] = cvel[i] + ca[i]*secPerReading;
+    cdist[i] = cdist[i] + cvel[i]*microsNow + 0.5*ca[i]*microsNow;
+    cvel[i] = cvel[i] + ca[i]*microsNow;
   }
 }
 
@@ -192,8 +228,8 @@ static void dist_to_normal()
 
 static void ndist_to_spherical()
 {
-  sTheta = 180 + atan2(ndist[1], ndist[0])*radToDeg;
-  sPhi = atan2((pow(ndist[0], 2) + pow(ndist[1], 2)), ndist[2])*radToDeg;
+  sTheta = atan2(ndist[1], ndist[0])*radToDeg;
+  sPhi = atan2(sqrt((pow(ndist[0], 2) + pow(ndist[1], 2))), ndist[2])*radToDeg;
 }
 
 void set_servos()
@@ -212,119 +248,216 @@ static void setup_angles()
   cdist[2] = 1.0;
 }
 
+static void printToSerial()
+{
+  Serial.print("fa:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(fa[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+
+  Serial.print("fg:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(fg[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+
+  Serial.print("ca:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(ca[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+
+  Serial.print("cvel:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(cvel[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+
+  Serial.print("cdist:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(cdist[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+
+  Serial.print("ndist:\t");
+  for (i = 0; i < 3; i++)
+  {
+    Serial.print(ndist[i]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+  
+  Serial.print("X Ang:\t");
+  Serial.println(sTheta);
+  
+  Serial.print("Y Ang:\t");
+  Serial.println(sPhi);
+
+  Serial.println("");
+}
+
+static void printToFile()
+{
+  testData.print("fa:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(fa[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+
+  testData.print("fg:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(fg[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+
+  testData.print("ca:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(ca[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+
+  testData.print("cvel:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(cvel[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+
+  testData.print("cdist:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(cdist[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+
+  testData.print("ndist:\t");
+  for (i = 0; i < 3; i++)
+  {
+    testData.print(ndist[i]);
+    testData.print("\t");
+  }
+  testData.println("");
+  
+  testData.print("X Ang:\t");
+  testData.println(sTheta);
+  
+  testData.print("Y Ang:\t");
+  testData.println(sPhi);
+
+  testData.println("");
+}
+
 static void begin_motion_detection()
 {
   microsPrevious = micros();
   int j = 0;
+  int k = 0;
+  int endCal = 500;
   
   while (rdySw)
   {
     rdySw = digitalRead(rdyPinIN);
-    microsNow = micros();
-    if (microsPerReading < (microsNow - microsPrevious))
+    while (!mpuInterrupt && fifoCount < packetSize)
     {
-      // read measurements from device, scaled to the configured range
-//      Serial.println("Get vals...");
-      get_new_data();
-  
-      // Compute the sine and cosine values
-//      Serial.println("Sin/cos...");
-      compute_scVals();
-  
-      // transform normal plane accel to global plane
-//      Serial.println("Global Plane...");
-      accel_to_global();
-  
-      // Update the distance & velocity in the global plane
-//      Serial.println("Update Globals...");
-      update_globalVals();
-  
-      // Compute the new servo angle in the base system
-//      Serial.println("Normal Dist...");
-      dist_to_normal();
+    }
+
+    // reset interrupt flag and get INT_STATUS byte
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+
+    // get current FIFO count
+    fifoCount = mpu.getFIFOCount();
+
+    // check for overflow (this should never happen unless our code is too inefficient)
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+      // reset so we can continue cleanly
+      mpu.resetFIFO();
+      Serial.println(F("FIFO overflow!"));
+
+    // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    } else if (mpuIntStatus & 0x02) {
+      // wait for correct available data length, should be a VERY short wait
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+
+      // read a packet from FIFO
+      mpu.getFIFOBytes(fifoBuffer, packetSize);
       
-      // Spherical transform for servo angles
-//      Serial.println("Spherical Normal Dist...");
-      ndist_to_spherical();
-  
-      // Wait for an update
-//      Serial.println("Delay...");
-//      Serial.println("");
+      // track FIFO count here in case there is > 1 packet available
+      // (this lets us immediately read more without waiting for an interrupt)
+      fifoCount -= packetSize;
 
-      j = j + 1;
-      if (uR <= j)
+      // Stabalize sensor
+      if (k < endCal)
       {
-        // Set servo angles to desired
-//        Serial.println("Set Servos...");
-        set_servos();
+        get_new_data();
+        k = k + 1;
+
+        if (k == endCal)
+        {
+          setup_angles();
+          microsPrevious = micros();
+        }
+      } else
+      {
         
-        j = 0;
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(ax[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(gx[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(fa[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(fg[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(ca[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(cvel[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(cdist[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
-
-        for (i = 0; i < 3; i++)
-        {
-          Serial.print(ndist[i]);
-          Serial.print(" ");
-        }
-        Serial.println("");
+        // read measurements from device, scaled to the configured range
+//        Serial.println("Get vals...");
+        get_new_data();
+    
+        // Compute the sine and cosine values
+//        Serial.println("Sin/cos...");
+        compute_scVals();
+    
+        // transform normal plane accel to global plane
+//        Serial.println("Global Plane...");
+        //accel_to_global();
+    
+        // Update the distance & velocity in the global plane
+//        Serial.println("Update Globals...");
+        update_globalVals();
+    
+        // Compute the new servo angle in the base system
+//        Serial.println("Normal Dist...");
+        dist_to_normal();
         
-        Serial.print("X Ang: ");
-        Serial.println(sTheta);
-        
-        Serial.print("Y Ang: ");
-        Serial.println(sPhi);
-  
-        Serial.println("");
+        // Spherical transform for servo angles
+//        Serial.println("Spherical Normal Dist...");
+        ndist_to_spherical();
+
+        j = j + 1;
+        if (uR <= j)
+        {
+          j = 0;
+          
+          set_servos();
+          
+          printToSerial();
+
+          if (testData)
+          {
+            printToFile();
+          }          
+        }
       }
-
-      microsPrevious = microsPrevious + microsPerReading;
     }
   }
 }
@@ -332,6 +465,8 @@ static void begin_motion_detection()
 // Used to continuously relay data over bluetooth connection
 void loop()
 {
+  if (!dmpReady) return;
+  
   rdySw = digitalRead(rdyPinIN);
   if (rdySw & rdy & !detecting)
   {
@@ -344,6 +479,5 @@ void loop()
   {
     Serial.println("Setting up values...");
     rdy = true;
-    setup_angles();
   }
 }
