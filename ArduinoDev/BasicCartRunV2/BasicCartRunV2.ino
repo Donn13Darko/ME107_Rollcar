@@ -18,8 +18,7 @@ int servoPinX = 9;
 int servoPinY = 6;
 bool rdy, detecting;
 const float Pi = 3.141593;
-int uR = 200;
-float prec = 32768.0;
+int uR = 50;
 unsigned long microsPrevious;
 float microsNow;
 float gOffZ;
@@ -80,9 +79,11 @@ float sTheta, sPhi;
 float rawToG = 16384.0;
 float gToMS = 9.81;
 float radToDeg = 180.0/Pi;
-float alpha = 0.05;
-float alpha2 = gToMS * alpha / rawToG;
-float alphaO = 1 - alpha;
+float alphaA = 0.8;
+float alphaA2 = gToMS * alphaA / rawToG;
+float alphaAO = 1 - alphaA;
+float alphaG = 0.8;
+float alphaGO = 1 - alphaG;
 
 // Function Prototypes
 static void get_new_data();
@@ -139,12 +140,12 @@ void setup()
   Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
   devStatus = mpu.dmpInitialize();
   
-  mpu.setXAccelOffset(2142);
-  mpu.setYAccelOffset(358);
-  mpu.setZAccelOffset(1115);
-  mpu.setXGyroOffset(220);
-  mpu.setYGyroOffset(-112);
-  mpu.setZGyroOffset(7);
+  mpu.setXAccelOffset(2145);
+  mpu.setYAccelOffset(357);
+  mpu.setZAccelOffset(1104);
+  mpu.setXGyroOffset(218);
+  mpu.setYGyroOffset(-111);
+  mpu.setZGyroOffset(8);
   if (devStatus == 0) {
       mpu.setDMPEnabled(true);
       attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
@@ -171,13 +172,13 @@ static void get_new_data()
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
   // Update filtered values
-  ca[0] = alpha2*aaWorld.y + alphaO*ca[0];
-  ca[1] = alpha2*aaWorld.x + alphaO*ca[1];
-  ca[2] = alpha2*aaWorld.z + alphaO*ca[2];
+  ca[0] = alphaA2*aaWorld.y + alphaAO*ca[0];
+  ca[1] = alphaA2*aaWorld.x + alphaAO*ca[1];
+  ca[2] = alphaA2*aaWorld.z + alphaAO*ca[2];
 
-  fg[0] = alpha*ypr[1] + alphaO*fg[0];
-  fg[1] = alpha*ypr[2] + alphaO*fg[1];
-  fg[2] = alpha*(ypr[0]-gOffZ) + alphaO*fg[2];
+  fg[0] = alphaG*ypr[1] + alphaGO*fg[0];
+  fg[1] = alphaG*ypr[2] + alphaGO*fg[1];
+  fg[2] = alphaG*(ypr[0]-gOffZ) + alphaGO*fg[2];
 }
 
 static void compute_scVals()
@@ -199,7 +200,7 @@ static void update_globalVals()
 
   for (i = 0; i < 3; i++)
   {
-    cdist[i] = cdist[i];// + cvel[i]*microsNow + 0.5*ca[i]*microsNow;
+    cdist[i] = cdist[i] + cvel[i]*microsNow + 0.5*ca[i]*pow(microsNow, 2);
     cvel[i] = cvel[i] + ca[i]*microsNow;
   }
 }
@@ -210,10 +211,6 @@ static void dist_to_normal()
   ndist[0] = cdist[0]*cy*cx + cdist[1]*(cz*sx*sy-cx*sz) + cdist[2]*(sx*sz+cx*cz*sy);
   ndist[1] = cdist[0]*cy*sz + cdist[1]*(cx*cz+sx*sy*sz) + cdist[2]*(cx*sy*sz-cz*sx);
   ndist[2] = cdist[0]*-sy + cdist[1]*cy*sx + cdist[2]*cx*cy;
-
-//  ndist[0] = cdist[0]*cy*cz + cdist[1]*-(cy*sz) + cdist[2]*sy;
-//  ndist[1] = cdist[0]*(cz*sx*sy+cx*sz) + cdist[1]*(cx*cz-sx*sy*sz) + cdist[2]*-(cy*sx);
-//  ndist[2] = cdist[0]*(sx*sz-cx*cz*sy) + cdist[1]*(cz*sx+cx*sy*sz) + cdist[2]*cx*cy;
 }
 
 static void ndist_to_spherical()
@@ -446,7 +443,7 @@ static void begin_motion_detection()
         }
 
         l = l + 1;
-        if (endCal == l)
+        if (1000 == l)
         {
           cvel[0] = cvel[1] = cvel[2] = 0;
           l = 0;
