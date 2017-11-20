@@ -28,4 +28,4 @@ A2 = [[cy*cz cz*sx*sy-cx*sz cx*cz*sy+sx*sz];
       [cy*sz cx*cz+sx*sy*sz cx*sy*sz-cz*sx];
       [-sy cy*sx cx*cy]];
   
-A2i = A2';
+A2i = inv(A2);

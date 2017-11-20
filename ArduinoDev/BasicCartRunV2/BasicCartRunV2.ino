@@ -12,7 +12,7 @@
 // Program must be reset every 70 mintues otherwise micros will overflow
 
 // Variables
-int i, rdySw;
+int i, j , k, l, rdySw, endCal;
 int rdyPinIN = 3;
 int servoPinX = 9;
 int servoPinY = 6;
@@ -22,6 +22,7 @@ int uR = 200;
 float prec = 32768.0;
 unsigned long microsPrevious;
 float microsNow;
+float gOffZ;
 
 // MPU6050
 MPU6050 mpu;
@@ -77,8 +78,8 @@ float sTheta, sPhi;
 
 // Scaling Values
 float rawToG = 16384.0;
-float gToMS = 9.8;
-float radToDeg = 180/Pi;
+float gToMS = 9.81;
+float radToDeg = 180.0/Pi;
 float alpha = 0.05;
 float alpha2 = gToMS * alpha / rawToG;
 float alphaO = 1 - alpha;
@@ -138,12 +139,12 @@ void setup()
   Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
   devStatus = mpu.dmpInitialize();
   
-  mpu.setXAccelOffset(2172);
-  mpu.setYAccelOffset(371);
-  mpu.setZAccelOffset(1105);
-  mpu.setXGyroOffset(221);
-  mpu.setYGyroOffset(-111);
-  mpu.setZGyroOffset(9);
+  mpu.setXAccelOffset(2142);
+  mpu.setYAccelOffset(358);
+  mpu.setZAccelOffset(1115);
+  mpu.setXGyroOffset(220);
+  mpu.setYGyroOffset(-112);
+  mpu.setZGyroOffset(7);
   if (devStatus == 0) {
       mpu.setDMPEnabled(true);
       attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
@@ -155,6 +156,8 @@ void setup()
       Serial.print(devStatus);
       Serial.println(F(")"));
   }
+
+  gOffZ = 0.0;
 }
 
 static void get_new_data()
@@ -174,7 +177,7 @@ static void get_new_data()
 
   fg[0] = alpha*ypr[1] + alphaO*fg[0];
   fg[1] = alpha*ypr[2] + alphaO*fg[1];
-  fg[2] = alpha*ypr[0] + alphaO*fg[2];
+  fg[2] = alpha*(ypr[0]-gOffZ) + alphaO*fg[2];
 }
 
 static void compute_scVals()
@@ -196,7 +199,7 @@ static void update_globalVals()
 
   for (i = 0; i < 3; i++)
   {
-    cdist[i] = cdist[i] + cvel[i]*microsNow + 0.5*ca[i]*microsNow;
+    cdist[i] = cdist[i];// + cvel[i]*microsNow + 0.5*ca[i]*microsNow;
     cvel[i] = cvel[i] + ca[i]*microsNow;
   }
 }
@@ -204,21 +207,25 @@ static void update_globalVals()
 static void dist_to_normal()
 {
   // Compute the normal distance transform
-  ndist[0] = cdist[0]*cy*cx + cdist[1]*(cz*sx*sy-cx*sz) + cdist[2]*sy;
+  ndist[0] = cdist[0]*cy*cx + cdist[1]*(cz*sx*sy-cx*sz) + cdist[2]*(sx*sz+cx*cz*sy);
   ndist[1] = cdist[0]*cy*sz + cdist[1]*(cx*cz+sx*sy*sz) + cdist[2]*(cx*sy*sz-cz*sx);
   ndist[2] = cdist[0]*-sy + cdist[1]*cy*sx + cdist[2]*cx*cy;
+
+//  ndist[0] = cdist[0]*cy*cz + cdist[1]*-(cy*sz) + cdist[2]*sy;
+//  ndist[1] = cdist[0]*(cz*sx*sy+cx*sz) + cdist[1]*(cx*cz-sx*sy*sz) + cdist[2]*-(cy*sx);
+//  ndist[2] = cdist[0]*(sx*sz-cx*cz*sy) + cdist[1]*(cz*sx+cx*sy*sz) + cdist[2]*cx*cy;
 }
 
 static void ndist_to_spherical()
 {
-  sPhi = atan2(ndist[1], ndist[0])*radToDeg + 90;
-  sTheta = 180 - atan2(sqrt((pow(ndist[0], 2) + pow(ndist[1], 2))), ndist[2])*radToDeg;
+  sTheta = 90 + atan2(ndist[1], ndist[0])*radToDeg;
+  sPhi = 90 - atan2(ndist[2], sqrt((pow(ndist[0], 2) + pow(ndist[1], 2))))*radToDeg;
 }
 
 void set_servos()
 {
-  xServo.write(sPhi);
-  yServo.write(sTheta);
+  xServo.write(sTheta);
+  yServo.write(sPhi);
 }
 
 static void setup_angles()
@@ -226,9 +233,9 @@ static void setup_angles()
   zeroVars();
   
   // Set starting distances
-  cdist[0] = 11.0;
-  cdist[1] = 11.0;
-  cdist[2] = 1.0;
+  cdist[0] = 1.0;
+  cdist[1] = 1.0;
+  cdist[2] = 0.0;
 }
 
 static void printToSerial()
@@ -353,39 +360,41 @@ static void printToSerial()
 static void begin_motion_detection()
 {
   microsPrevious = micros();
-  int j = 0;
-  int k = 0;
-  int endCal = 100;
+  j = 0;
+  k = 0;
+  l = 0;
+  endCal = 1000;
   
   while (rdySw)
   {
+    // Update button and block till interrupt
     rdySw = digitalRead(rdyPinIN);
     while (!mpuInterrupt && fifoCount < packetSize)
     {
     }
 
-    // reset interrupt flag and get INT_STATUS byte
+    // Reset interrupt flag and get INT_STATUS byte
     mpuInterrupt = false;
     mpuIntStatus = mpu.getIntStatus();
 
-    // get current FIFO count
+    // Get current FIFO count
     fifoCount = mpu.getFIFOCount();
 
-    // check for overflow (this should never happen unless our code is too inefficient)
+    // Check for overflow (this should never happen unless our code is too inefficient)
     if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
       // reset so we can continue cleanly
       mpu.resetFIFO();
       Serial.println(F("FIFO overflow!"));
 
-    // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    // Otherwise, check for DMP data ready interrupt (this should happen frequently)
     } else if (mpuIntStatus & 0x02) {
-      // wait for correct available data length, should be a VERY short wait
+      // Wait for correct available data length, should be a VERY short wait
       while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
 
-      // read a packet from FIFO
+      // Read a packet from FIFO
       mpu.getFIFOBytes(fifoBuffer, packetSize);
       
-      // track FIFO count here in case there is > 1 packet available
+      // Track FIFO count here in case there is > 1 packet available
       // (this lets us immediately read more without waiting for an interrupt)
       fifoCount -= packetSize;
 
@@ -399,11 +408,12 @@ static void begin_motion_detection()
         {
           setup_angles();
           microsPrevious = micros();
+          gOffZ = fg[2];
         }
       } else
       {
         
-        // read measurements from device, scaled to the configured range
+        // Read measurements from device, scaled to the configured range
 //        Serial.println("Get vals...");
         get_new_data();
     
@@ -433,6 +443,13 @@ static void begin_motion_detection()
           
           printToSerial();
 //          printToFile();
+        }
+
+        l = l + 1;
+        if (endCal == l)
+        {
+          cvel[0] = cvel[1] = cvel[2] = 0;
+          l = 0;
         }
       }
     }
