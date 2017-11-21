@@ -79,10 +79,10 @@ float sTheta, sPhi;
 float rawToG = 16384.0;
 float gToMS = 9.81;
 float radToDeg = 180.0/Pi;
-float alphaA = 0.8;
+float alphaA = 1;
 float alphaA2 = gToMS * alphaA / rawToG;
 float alphaAO = 1 - alphaA;
-float alphaG = 0.8;
+float alphaG = 1;
 float alphaGO = 1 - alphaG;
 
 // Function Prototypes
@@ -140,12 +140,12 @@ void setup()
   Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
   devStatus = mpu.dmpInitialize();
   
-  mpu.setXAccelOffset(2145);
-  mpu.setYAccelOffset(357);
-  mpu.setZAccelOffset(1104);
-  mpu.setXGyroOffset(218);
-  mpu.setYGyroOffset(-111);
-  mpu.setZGyroOffset(8);
+  mpu.setXAccelOffset(2128);
+  mpu.setYAccelOffset(355);
+  mpu.setZAccelOffset(1125);
+  mpu.setXGyroOffset(223);
+  mpu.setYGyroOffset(-114);
+  mpu.setZGyroOffset(6);
   if (devStatus == 0) {
       mpu.setDMPEnabled(true);
       attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
@@ -176,9 +176,9 @@ static void get_new_data()
   ca[1] = alphaA2*aaWorld.x + alphaAO*ca[1];
   ca[2] = alphaA2*aaWorld.z + alphaAO*ca[2];
 
-  fg[0] = alphaG*ypr[1] + alphaGO*fg[0];
-  fg[1] = alphaG*ypr[2] + alphaGO*fg[1];
-  fg[2] = alphaG*(ypr[0]-gOffZ) + alphaGO*fg[2];
+  fg[0] = alphaG*ypr[1]*0.75 + alphaGO*fg[0];
+  fg[1] = alphaG*abs(ypr[2])*0.75 + alphaGO*fg[1];
+  fg[2] = alphaG*(ypr[0]-gOffZ)*0.75 + alphaGO*fg[2];
 }
 
 static void compute_scVals()
@@ -230,9 +230,9 @@ static void setup_angles()
   zeroVars();
   
   // Set starting distances
-  cdist[0] = 1.0;
-  cdist[1] = 1.0;
-  cdist[2] = 0.0;
+  cdist[0] = 10.0;
+  cdist[1] = 0.1;
+  cdist[2] = 5.0;
 }
 
 static void printToSerial()
