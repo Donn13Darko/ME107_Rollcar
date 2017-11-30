@@ -84,6 +84,7 @@ float alphaA2 = gToMS * alphaA / rawToG;
 float alphaAO = 1 - alphaA;
 float alphaG = 1;
 float alphaGO = 1 - alphaG;
+float gyroFF = 0.8;
 
 // Function Prototypes
 static void get_new_data();
@@ -140,12 +141,12 @@ void setup()
   Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
   devStatus = mpu.dmpInitialize();
   
-  mpu.setXAccelOffset(2128);
-  mpu.setYAccelOffset(355);
-  mpu.setZAccelOffset(1125);
+  mpu.setXAccelOffset(2096);
+  mpu.setYAccelOffset(362);
+  mpu.setZAccelOffset(1101);
   mpu.setXGyroOffset(223);
-  mpu.setYGyroOffset(-114);
-  mpu.setZGyroOffset(6);
+  mpu.setYGyroOffset(-112);
+  mpu.setZGyroOffset(8);
   if (devStatus == 0) {
       mpu.setDMPEnabled(true);
       attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
@@ -169,6 +170,7 @@ static void get_new_data()
   mpu.dmpGetGravity(&gravity, &q);
   mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
   mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+//  mpu.dmpGetEuler(euler, &q);
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
   // Update filtered values
@@ -176,9 +178,9 @@ static void get_new_data()
   ca[1] = alphaA2*aaWorld.x + alphaAO*ca[1];
   ca[2] = alphaA2*aaWorld.z + alphaAO*ca[2];
 
-  fg[0] = alphaG*ypr[1]*0.75 + alphaGO*fg[0];
-  fg[1] = alphaG*abs(ypr[2])*0.75 + alphaGO*fg[1];
-  fg[2] = alphaG*(ypr[0]-gOffZ)*0.75 + alphaGO*fg[2];
+  fg[0] = alphaG*ypr[1]*gyroFF + alphaGO*fg[0];
+  fg[1] = alphaG*abs(ypr[2])*gyroFF + alphaGO*fg[1];
+  fg[2] = alphaG*(ypr[0]-gOffZ)*gyroFF + alphaGO*fg[2];
 }
 
 static void compute_scVals()
@@ -232,7 +234,7 @@ static void setup_angles()
   // Set starting distances
   cdist[0] = 10.0;
   cdist[1] = 0.1;
-  cdist[2] = 5.0;
+  cdist[2] = 1.0;
 }
 
 static void printToSerial()
